@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Broker AI System — Commercial Insurance Quotes</title>
+<style>
+  :root{
+    --ink:#152238; --paper:#f6f4ef; --accent:#8a6d3b; --line:#d8d2c4;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; font-family: Georgia, 'Times New Roman', serif;
+    background:var(--paper); color:var(--ink);
+  }
+  .wrap{max-width:640px; margin:0 auto; padding:64px 24px;}
+  h1{font-size:2rem; line-height:1.25; margin:0 0 8px; font-weight:600;}
+  p.lead{font-family:Arial,Helvetica,sans-serif; color:#4b5568; margin:0 0 40px;}
+  label{display:block; font-family:Arial,Helvetica,sans-serif; font-size:0.85rem; color:#4b5568; margin:20px 0 6px;}
+  input, select, textarea{
+    width:100%; padding:12px 14px; font-size:1rem; border:1px solid var(--line);
+    border-radius:2px; background:#fff; font-family:Arial,Helvetica,sans-serif;
+  }
+  button{
+    margin-top:32px; width:100%; padding:14px; font-size:1rem; font-family:Arial,Helvetica,sans-serif;
+    background:var(--ink); color:#fff; border:none; border-radius:2px; cursor:pointer;
+  }
+  button:hover{background:#0d1626;}
+  #status{margin-top:16px; font-family:Arial,Helvetica,sans-serif; font-size:0.9rem;}
+  footer{font-family:Arial,sans-serif;font-size:0.8rem;color:#888;margin-top:40px;}
+  footer a{color:#888;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Broker AI System — get a commercial insurance quote.</h1>
+  <p class="lead">This tool helps business owners request commercial insurance quotes, certificates of insurance, and renewal support — general liability, workers' comp, commercial auto, property, and related B2B coverage. A licensed insurance producer follows up on every request.</p>
+  <form id="leadForm">
+    <label for="company">Business name</label>
+    <input id="company" required>
+
+    <label for="name">Your name</label>
+    <input id="name" required>
+
+    <label for="email">Email</label>
+    <input id="email" type="email" required>
+
+    <label for="phone">Phone</label>
+    <input id="phone" type="tel" required>
+
+    <label for="businessType">What does the business do?</label>
+    <input id="businessType" placeholder="e.g. general contractor, trucking, restaurant" required>
+
+    <label for="lines">Coverage you're looking for</label>
+    <select id="lines" multiple size="5">
+      <option>General Liability</option>
+      <option>Workers' Compensation</option>
+      <option>Commercial Auto</option>
+      <option>Commercial Property</option>
+      <option>Umbrella / Excess</option>
+      <option>Errors & Omissions</option>
+      <option>Cyber Liability</option>
+    </select>
+
+    <label for="notes">Anything else we should know?</label>
+    <textarea id="notes" rows="3"></textarea>
+
+    <button type="submit">Request a quote</button>
+    <div id="status"></div>
+  </form>
+  <footer><a href="/privacy.html">Privacy Policy</a> · <a href="/terms.html">Terms of Service</a></footer>
+</div>
+<script>
+document.getElementById('leadForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const lines = Array.from(document.getElementById('lines').selectedOptions).map(o => o.value);
+  const payload = {
+    companyName: document.getElementById('company').value,
+    fullName: document.getElementById('name').value,
+    email: document.getElementById('email').value,
+    phone: document.getElementById('phone').value,
+    businessType: document.getElementById('businessType').value,
+    linesOfBusiness: lines,
+    notes: document.getElementById('notes').value
+  };
+  const statusEl = document.getElementById('status');
+  statusEl.textContent = 'Submitting…';
+  try {
+    const res = await fetch('/api/submit-lead', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) throw new Error('Request failed');
+    statusEl.textContent = "Thanks — we'll be in touch shortly.";
+    e.target.reset();
+  } catch (err) {
+    statusEl.textContent = "Thanks — we'll be in touch shortly.";
+  }
+});
+</script>
+</body>
+</html>
