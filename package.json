@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "imapflow": "^2.0.2",
+    "nodemailer": "^10.0.9"
+  }
+}
