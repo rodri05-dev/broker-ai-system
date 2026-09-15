@@ -1,4 +1,5 @@
-const { getUnreadLeadEmails, markAsRead } = require('../../../lib/gmail');
+
+const { getUnreadLeadEmails, markAsRead } = require('../../lib/gmail');
 
 module.exports = async (req, res) => {
   const auth = req.headers.authorization;
