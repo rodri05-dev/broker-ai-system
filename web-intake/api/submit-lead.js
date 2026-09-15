@@ -1,4 +1,6 @@
-const { getUnreadLeadEmails, markAsRead } = require('../../lib/gmail');
+const { createClient } = require('@supabase/supabase-js');
+const { createOrUpdateContact } = require('../lib/hubspot');
+const { sendEmail } = require('../lib/gmail');
 
 module.exports = async (req, res) => {
   const auth = req.headers.authorization;
