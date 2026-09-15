@@ -23,11 +23,8 @@ module.exports = async (req, res) => {
     return res.status(200).json({ checked: emails.length, processed: results.length });
   } catch (err) {
     console.error('check-email failed:', err);
-    return res.status(500).json({
-      error: err.message,
-      name: err.name,
-      code: err.code,
-      stack: err.stack
-    });
+    const errDetails = {};
+    Object.getOwnPropertyNames(err).forEach(k => { errDetails[k] = err[k]; });
+    return res.status(500).json(errDetails);
   }
 };
