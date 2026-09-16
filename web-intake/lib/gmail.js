@@ -29,7 +29,7 @@ async function processUnreadEmails(handler) {
   timings.connectMs = Date.now() - t0;
 
   const t1 = Date.now();
-  const lock = await client.getMailboxLock('INBOX');
+  const lock = await client.getMailboxLock('Leads');
   timings.lockMs = Date.now() - t1;
 
   let checked = 0, processed = 0;
