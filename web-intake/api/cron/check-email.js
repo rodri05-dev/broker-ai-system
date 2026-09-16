@@ -1,26 +1,24 @@
-const { getUnreadLeadEmails, markAsRead } = require('../../lib/gmail');
+const { processUnreadEmails } = require('../../lib/gmail');
+const { createLead } = require('../../lib/create-lead');
 
 module.exports = async (req, res) => {
   const auth = req.headers.authorization;
   if (auth !== `Bearer ${process.env.CRON_CHECK_SECRET}`) return res.status(401).end();
 
   try {
-    const emails = await getUnreadLeadEmails();
-    const results = [];
-
-    for (const email of emails) {
-      const submitRes = await fetch(`https://${req.headers.host}/api/submit-lead`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+    const result = await processUnreadEmails(async (email) => {
+      try {
+        await createLead({
           fullName: email.fullName, email: email.email, companyName: email.subject,
           notes: email.snippet, leadSource: 'email'
-        })
-      });
-      if (submitRes.ok) { await markAsRead(email.id); results.push(email.id); }
-    }
-
-    return res.status(200).json({ checked: emails.length, processed: results.length });
+        });
+        return true;
+      } catch (e) {
+        console.error('Failed to create lead from email:', email.email, e);
+        return false;
+      }
+    });
+    return res.status(200).json(result);
   } catch (err) {
     console.error('check-email failed:', err);
     const errDetails = {};
