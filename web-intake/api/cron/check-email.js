@@ -3,8 +3,8 @@ const { createLead } = require('../../lib/create-lead');
 
 module.exports = async (req, res) => {
   const auth = req.headers.authorization;
-  if (auth !== `Bearer ${process.env.CRON_CHECK_SECRET}`) return res.status(401).end();
-
+const expected = process.env.CRON_CHECK_SECRET;
+if (auth !== `Bearer ${expected}` && req.query.secret !== expected) return res.status(401).end();
   try {
     const result = await processUnreadEmails(async (email) => {
       try {

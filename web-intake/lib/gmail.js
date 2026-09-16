@@ -22,11 +22,20 @@ function getImapClient() {
 // and marks it read in the SAME session the moment handler succeeds — instead of opening
 // a brand new IMAP connection per message just to flip one flag.
 async function processUnreadEmails(handler) {
+  const timings = {};
+  const t0 = Date.now();
   const client = getImapClient();
   await client.connect();
+  timings.connectMs = Date.now() - t0;
+
+  const t1 = Date.now();
   const lock = await client.getMailboxLock('INBOX');
+  timings.lockMs = Date.now() - t1;
+
   let checked = 0, processed = 0;
+  const perEmailMs = [];
   try {
+    const t2 = Date.now();
     for await (const msg of client.fetch({ seen: false }, { envelope: true })) {
       checked++;
       const email = {
@@ -36,16 +45,27 @@ async function processUnreadEmails(handler) {
         subject: msg.envelope.subject || '',
         snippet: ''
       };
-      if (await handler(email)) {
+      const tHandler = Date.now();
+      const ok = await handler(email);
+      const handlerMs = Date.now() - tHandler;
+      if (ok) {
+        const tFlag = Date.now();
         await client.messageFlagsAdd(msg.uid, ['\\Seen']);
+        perEmailMs.push({ from: email.email, handlerMs, flagMs: Date.now() - tFlag });
         processed++;
+      } else {
+        perEmailMs.push({ from: email.email, handlerMs, skipped: true });
       }
     }
+    timings.fetchLoopMs = Date.now() - t2;
   } finally {
     lock.release();
   }
+  const t3 = Date.now();
   await client.logout();
-  return { checked, processed };
+  timings.logoutMs = Date.now() - t3;
+
+  return { checked, processed, timings, perEmailMs };
 }
 
 module.exports = { sendEmail, processUnreadEmails };
