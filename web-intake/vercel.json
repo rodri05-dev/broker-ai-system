@@ -1,0 +1,15 @@
+{
+  "functions": {
+    "api/*.js": { "maxDuration": 30 },
+    "api/voice/*.js": { "maxDuration": 30 },
+    "api/voice-web/*.js": { "maxDuration": 60 },
+    "api/coi/*.js": { "maxDuration": 30 },
+    "api/cron/*.js": { "maxDuration": 60 }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/renewal-check",
+      "schedule": "0 12 * * *"
+    }
+  ]
+}

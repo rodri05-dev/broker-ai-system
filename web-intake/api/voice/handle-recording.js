@@ -1,7 +1,7 @@
 const twilio = require('twilio');
 const { createClient } = require('@supabase/supabase-js');
 const { groqChat, groqTranscribe, groqSpeak } = require('../../lib/groq');
-const { retrieveContext } = require('../../lib/rag');
+const { retrieveContext } = require('../../lib/kb');
 const { buildSystemPrompt } = require('../../lib/prompt');
 const { storeAudioAndGetUrl } = require('../../lib/audio-store');
 const { handleAgentAction } = require('../../lib/actions');
