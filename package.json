@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "@huggingface/transformers": "^4.3.0",
     "@supabase/supabase-js": "^2.116.0",
     "imapflow": "^2.0.5",
     "nodemailer": "^10.0.10"
