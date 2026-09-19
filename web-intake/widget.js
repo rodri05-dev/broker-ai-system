@@ -20,7 +20,8 @@
     #ai-chat-input input{flex:1;border:none;padding:12px;font-size:0.88rem;outline:none;background:#faf9f6;color:#152238;}
     #ai-chat-input input::placeholder{color:#9aa1ac;}
     #ai-chat-input input:focus{background:#fff;}
-    #ai-chat-input button{border:none;background:#152238;color:#fff;padding:0 16px;cursor:pointer;}
+    #ai-chat-input button{border:none;background:#152238;color:#fff;padding:0 16px;cursor:pointer;
+  width:auto !important;flex:0 0 auto !important;white-space:nowrap;}
   `;
   document.head.appendChild(style);
 
