@@ -16,8 +16,10 @@
     .ai-msg{margin-bottom:10px;padding:8px 12px;border-radius:12px;max-width:85%;}
     .ai-msg.user{background:#152238;color:#fff;margin-left:auto;}
     .ai-msg.bot{background:#f0eee8;color:#152238;}
-    #ai-chat-input{display:flex;border-top:1px solid #eee;}
-    #ai-chat-input input{flex:1;border:none;padding:12px;font-size:0.88rem;outline:none;}
+    #ai-chat-input{display:flex;border-top:1px solid #eee;background:#faf9f6;}
+    #ai-chat-input input{flex:1;border:none;padding:12px;font-size:0.88rem;outline:none;background:#faf9f6;color:#152238;}
+    #ai-chat-input input::placeholder{color:#9aa1ac;}
+    #ai-chat-input input:focus{background:#fff;}
     #ai-chat-input button{border:none;background:#152238;color:#fff;padding:0 16px;cursor:pointer;}
   `;
   document.head.appendChild(style);
