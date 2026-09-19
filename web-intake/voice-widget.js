@@ -62,11 +62,13 @@
     log.scrollTop = log.scrollHeight;
   }
 
-  async function startCall() {
+    async function startCall() {
+    panel.classList.add('open');
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    } catch {
-      setStatus('Microphone blocked — allow mic access and try again');
+    } catch (err) {
+      console.error('mic error:', err);
+      setStatus('Microphone blocked — click the address bar padlock, allow microphone, and reload');
       return;
     }
     active = true;
