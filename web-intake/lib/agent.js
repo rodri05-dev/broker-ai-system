@@ -13,6 +13,41 @@ const CLOSING = ['end_conversation', 'transfer_human'];
 const withTimeout = (promise, ms, fallback) =>
   Promise.race([promise, new Promise(r => setTimeout(() => r(fallback), ms))]);
 
+// Escape % and _ so they are matched literally inside ILIKE.
+const esc = s => s.replace(/[\\%_]/g, '\\$&');
+
+// ---------------------------------------------------------------------------
+// Working out WHO is talking. The model names its fields however it likes
+// (email, callerEmail, requesterEmail...), so we look at key NAMES, not an exact list.
+// Anything that belongs to the certificate holder is ignored.
+// ---------------------------------------------------------------------------
+const HOLDER_KEY = /^(cert(ificate)?holder|holder)/i;
+
+const flat = (obj, prefix = '') =>
+  Object.entries(obj && typeof obj === 'object' ? obj : {}).flatMap(([k, v]) =>
+    v && typeof v === 'object' && !Array.isArray(v) ? flat(v, prefix + k) : [[prefix + k, v]]);
+
+function pickValue(collected, test) {
+  for (const [key, val] of flat(collected)) {
+    if (HOLDER_KEY.test(key) || typeof val !== 'string') continue;
+    const v = val.trim();
+    if (!v || /^(true|false)$/i.test(v)) continue;
+    if (test(key.toLowerCase())) return v;
+  }
+  return null;
+}
+
+function identityFrom(collected) {
+  const isContactField = k => /email|phone|mobile|address|type/.test(k);
+  return {
+    email: (pickValue(collected, k => k.includes('email')) || '').toLowerCase() || null,
+    phone: pickValue(collected, k => /phone|mobile/.test(k)),
+    companyName: pickValue(collected, k => !isContactField(k) && /company|business|insured|organi[sz]ation/.test(k)),
+    fullName: pickValue(collected, k => /name$/.test(k) && !/company|business|insured|project|carrier|policy/.test(k)),
+    businessType: pickValue(collected, k => k === 'businesstype')
+  };
+}
+
 async function getOrCreateSession(sessionToken, channel = 'chat') {
   const { data: existing } = await supabase
     .from('chat_sessions').select('*').eq('session_token', sessionToken).maybeSingle();
@@ -31,35 +66,37 @@ async function getOrCreateSession(sessionToken, channel = 'chat') {
 async function ensureContact(session, collected = {}, leadSource) {
   if (session.contact_id) return session.contact_id;
 
-  const email = collected.email || collected.attendeeEmail;
-  const fullName = collected.fullName || collected.attendeeName || collected.contactName;
-  const phone = collected.phone;
-  if (!email && !fullName && !phone) return null;
+  const { email, phone, companyName, fullName, businessType } = identityFrom(collected);
+  if (!email && !fullName && !phone && !companyName) return null;
 
+  const link = async id => {
+    await supabase.from('chat_sessions').update({ contact_id: id }).eq('id', session.id);
+    session.contact_id = id;
+    return id;
+  };
+
+  // 1. Same email (any capitalisation) = same person.
   if (email) {
-    const { data: found } = await supabase
-      .from('contacts').select('id').eq('email', email).maybeSingle();
-    if (found) {
-      await supabase.from('chat_sessions').update({ contact_id: found.id }).eq('id', session.id);
-      session.contact_id = found.id;
-      return found.id;
-    }
+    const { data: byEmail } = await supabase.from('contacts').select('id')
+      .ilike('email', esc(email)).limit(1).maybeSingle();
+    if (byEmail) return link(byEmail.id);
   }
 
+  // 2. Same company name — only when exactly one contact has it, so we never guess.
+  if (companyName) {
+    const { data: byName } = await supabase.from('contacts').select('id')
+      .ilike('company_name', esc(companyName)).limit(2);
+    if (byName && byName.length === 1) return link(byName[0].id);
+  }
+
+  // 3. Nobody we know — create a new contact.
   const { data: contact, error } = await supabase.from('contacts').insert({
-    email: email || null,
-    full_name: fullName || null,
-    phone: phone || null,
-    company_name: collected.companyName || null,
-    business_type: collected.businessType || null,
-    lead_source: leadSource,
-    status: 'new'
+    email, full_name: fullName, phone, company_name: companyName,
+    business_type: businessType,
+    lead_source: leadSource, status: 'new'
   }).select().single();
   if (error || !contact) { console.error('Contact create failed:', error); return null; }
-
-  await supabase.from('chat_sessions').update({ contact_id: contact.id }).eq('id', session.id);
-  session.contact_id = contact.id;
-  return contact.id;
+  return link(contact.id);
 }
 
 async function runAgentTurn({ session, userText, leadSource = 'chat' }) {
@@ -102,6 +139,28 @@ async function runAgentTurn({ session, userText, leadSource = 'chat' }) {
   ];
 
   const contactId = await ensureContact(session, parsed.collected_data, leadSource);
+  const d = parsed.collected_data && typeof parsed.collected_data === 'object' ? parsed.collected_data : {};
+
+  // Safety net: the model sometimes keeps asking questions even though it already has a complete
+  // certificate request. If everything the certificate needs is there, act anyway.
+  let shouldAct = parsed.ready_to_act;
+  if (!shouldAct && parsed.intent === 'coi_request' && d.certHolderName && d.certHolderAddress && d.certHolderEmail) {
+    shouldAct = true;
+  }
+
+  // Run each action once per conversation — the model often repeats ready_to_act on later turns.
+  const actionKey = [parsed.intent, d.certHolderName, d.certHolderAddress, d.chosenStartTimeIso]
+    .map(x => String(x || '').toLowerCase().trim()).join('|');
+  const alreadyDone = history.some(h => h.acted === actionKey);
+  const willAct = Boolean(shouldAct && contactId && !alreadyDone);
+  if (willAct) transcript[transcript.length - 1].acted = actionKey;
+
+  // Shows up in Vercel -> Logs. willAct=false with shouldAct=true and contactId=null means
+  // the agent was ready but could not tell which client is asking.
+  console.log('agent turn', JSON.stringify({
+    intent: parsed.intent, ready: parsed.ready_to_act, shouldAct, contactId, alreadyDone, willAct,
+    keys: Object.keys(d)
+  }));
 
   await supabase.from('chat_sessions').update({
     transcript,
@@ -113,11 +172,11 @@ async function runAgentTurn({ session, userText, leadSource = 'chat' }) {
   session.transcript = transcript;
   session.intent = parsed.intent;
 
-  if (parsed.ready_to_act && contactId) {
+  if (willAct) {
     // Awaited deliberately. Vercel can freeze the function the instant the response
     // is sent, so a fire-and-forget promise here silently never finishes.
     await withTimeout(
-      handleAgentAction({ contactId, intent: parsed.intent, data: parsed.collected_data })
+      handleAgentAction({ contactId, intent: parsed.intent, data: d })
         .catch(e => { console.error('Agent action failed:', e); return null; }),
       12000,
       { timedOut: true }
