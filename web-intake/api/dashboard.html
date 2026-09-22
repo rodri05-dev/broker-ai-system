@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Producer Dashboard</title>
+<style>
+  :root{ --ink:#152238; --paper:#f6f4ef; --line:#e2ddd0; --amber:#b3782c; --ok:#3c6e47;}
+  *{box-sizing:border-box;}
+  body{margin:0; font-family:Arial,Helvetica,sans-serif; background:var(--paper); color:var(--ink);}
+  header{padding:24px 32px; border-bottom:1px solid var(--line);}
+  header h1{margin:0; font-size:1.3rem;}
+  #gate{max-width:340px; margin:120px auto; text-align:center;}
+  #gate input{width:100%; padding:10px; margin:12px 0; border:1px solid var(--line); font-size:1rem;}
+  #gate button, .refresh{padding:10px 18px; background:var(--ink); color:#fff; border:none; cursor:pointer; font-size:0.95rem;}
+  #gateError{color:#a02c2c; font-size:0.85rem; min-height:1.2em; margin-top:4px;}
+  main{display:none; padding:24px 32px; max-width:1200px; margin:0 auto;}
+  main.visible{display:block;}
+  .toolbar{display:flex; justify-content:space-between; align-items:center;}
+  .grid{display:grid; grid-template-columns:1fr 1fr; gap:24px; margin-top:20px;}
+  @media (max-width: 800px){ .grid{ grid-template-columns:1fr; } }
+  .card{background:#fff; border:1px solid var(--line); border-radius:6px; padding:18px; max-height:420px; overflow-y:auto;}
+  .card h2{font-size:0.95rem; margin:0 0 12px; color:#4b5568;}
+  .row{padding:10px 0; border-bottom:1px solid var(--line); font-size:0.88rem;}
+  .row:last-child{border-bottom:none;}
+  .tag{display:inline-block; padding:2px 8px; border-radius:10px; font-size:0.72rem; margin-left:6px;}
+  .tag.urgent{background:#fbe4e4; color:#a02c2c;}
+  .tag.warn{background:#fbeecd; color:var(--amber);}
+  .tag.ok{background:#e1efe4; color:var(--ok);}
+  .score{font-weight:bold;}
+  .muted{color:#6b7688; font-size:0.78rem; margin-top:2px;}
+</style>
+</head>
+<body>
+<div id="gate">
+  <h1>Producer Dashboard</h1>
+  <input id="tokenInput" type="password" placeholder="Access token" autocomplete="off">
+  <button onclick="unlock()">Enter</button>
+  <div id="gateError"></div>
+</div>
+
+<header style="display:none" id="mainHeader">
+  <div class="toolbar">
+    <h1>Today's pipeline</h1>
+    <button class="refresh" onclick="load()">Refresh</button>
+  </div>
+</header>
+<main id="main">
+  <div class="grid">
+    <div class="card"><h2>Recent calls</h2><div id="callsList"></div></div>
+    <div class="card"><h2>Pending COI approvals</h2><div id="coiList"></div></div>
+    <div class="card"><h2>Pipeline (new &amp; qualified)</h2><div id="pipelineList"></div></div>
+    <div class="card"><h2>Renewals — next 90 days</h2><div id="renewalsList"></div></div>
+    <div class="card"><h2>Recent conversations</h2><div id="convoList"></div></div>
+  </div>
+</main>
+
+<script>
+const CHANNEL = { chat: '💬 chat', voice_web: '🎙 web voice', phone: '📞 phone' };
+
+function unlock() {
+  const token = document.getElementById('tokenInput').value.trim();
+  if (!token) return;
+  localStorage.setItem('dashboardToken', token);
+  load();
+}
+
+function escapeHtml(str) {
+  return String(str ?? '').replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
+
+async function load() {
+  const token = localStorage.getItem('dashboardToken');
+  if (!token) return;
+
+  let res;
+  try {
+    res = await fetch('/api/dashboard-data', { headers: { Authorization: `Bearer ${token}` } });
+  } catch (e) {
+    document.getElementById('gateError').textContent = 'Could not reach the server — try again.';
+    return;
+  }
+
+  if (res.status === 401) {
+    localStorage.removeItem('dashboardToken');
+    document.getElementById('gate').style.display = 'block';
+    document.getElementById('mainHeader').style.display = 'none';
+    document.getElementById('main').classList.remove('visible');
+    document.getElementById('gateError').textContent = 'Wrong token — try again.';
+    return;
+  }
+  if (!res.ok) {
+    document.getElementById('gateError').textContent = 'Something went wrong loading the dashboard.';
+    return;
+  }
+
+  const data = await res.json();
+
+  document.getElementById('gate').style.display = 'none';
+  document.getElementById('gateError').textContent = '';
+  document.getElementById('mainHeader').style.display = 'block';
+  document.getElementById('main').classList.add('visible');
+
+  document.getElementById('callsList').innerHTML = (data.recentCalls || []).map(c => `
+    <div class="row">
+      <strong>${escapeHtml(c.contacts?.company_name || c.caller_phone || 'Unknown caller')}</strong> — ${escapeHtml(c.intent || 'general')}
+      <div class="muted">${escapeHtml(c.summary || '(in progress)')}</div>
+    </div>`).join('') || '<div class="row">No calls yet.</div>';
+
+  document.getElementById('coiList').innerHTML = (data.pendingCois || []).map(r => `
+    <div class="row"><strong>${escapeHtml(r.contacts?.company_name || 'Unknown client')}</strong> → ${escapeHtml(r.certificate_holder_name || '—')}
+    <span class="tag warn">awaiting review</span></div>`).join('') || '<div class="row">Nothing pending.</div>';
+
+  document.getElementById('pipelineList').innerHTML = (data.pipeline || []).map(p => `
+    <div class="row">${escapeHtml(p.company_name || p.full_name || '(no name)')} — ${escapeHtml(p.business_type || '')}
+    <span class="score">${p.qualification_score ?? 0}</span>
+    <span class="tag ${p.status === 'new' ? 'warn' : 'ok'}">${escapeHtml(p.status || 'new')}</span></div>`).join('') || '<div class="row">No leads yet.</div>';
+
+  document.getElementById('renewalsList').innerHTML = (data.renewals || []).map(r => {
+    const daysOut = Math.round((new Date(r.expiration_date) - new Date()) / 86400000);
+    const tagClass = daysOut <= 30 ? 'urgent' : daysOut <= 60 ? 'warn' : 'ok';
+    return `<div class="row">${escapeHtml(r.contacts?.company_name || 'Unknown client')} — ${escapeHtml(r.carrier_name || '')}
+      <span class="tag ${tagClass}">${daysOut}d</span></div>`;
+  }).join('') || '<div class="row">Nothing renewing soon.</div>';
+
+  document.getElementById('convoList').innerHTML = (data.conversations || []).map(c => `
+    <div class="row">
+      ${CHANNEL[c.channel] || escapeHtml(c.channel || 'unknown')} — ${escapeHtml(c.contacts?.company_name || c.contacts?.full_name || 'unidentified visitor')}
+      <span class="tag ${c.status === 'closed' ? 'ok' : 'warn'}">${escapeHtml(c.intent || 'general')}</span>
+      <div class="muted">${new Date(c.updated_at).toLocaleString()}</div>
+    </div>`).join('') || '<div class="row">No conversations yet.</div>';
+}
+
+document.getElementById('tokenInput').addEventListener('keydown', e => { if (e.key === 'Enter') unlock(); });
+if (localStorage.getItem('dashboardToken')) load();
+</script>
+</body>
+</html>

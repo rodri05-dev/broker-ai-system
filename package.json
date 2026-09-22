@@ -5,6 +5,7 @@
     "imapflow": "^2.0.5",
     "nodemailer": "^10.0.10",
     "pdf-lib": "^1.17.1",
+    "pdf-parse": "^2.4.5",
     "twilio": "^6.1.1"
   }
 }
