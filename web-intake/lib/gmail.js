@@ -22,10 +22,15 @@ function getImapClient() {
 // and marks it read in the SAME session the moment handler succeeds — instead of opening
 // a brand new IMAP connection per message just to flip one flag.
 //
-// Watches INBOX rather than a separate label — a real client email needs to be picked up
-// with zero manual labeling. (Previously this watched a "Leads" label that nothing ever
-// routed mail into, so nothing was ever found.)
-async function processUnreadEmails(handler) {
+// Watches INBOX rather than a separate label, so a real client email needs zero manual
+// labeling to be picked up.
+//
+// `sinceDays` keeps this from re-scanning months of old unread newsletters/receipts on every
+// run — only mail that's both unread AND recent is a realistic candidate for a new lead.
+// `maxMessages` is a hard ceiling so one unusually large backlog can never blow past Vercel's
+// function time limit again; anything past the cap is simply left unread and picked up on the
+// next run a few minutes later, not lost.
+async function processUnreadEmails(handler, { sinceDays = 3, maxMessages = 25 } = {}) {
   const timings = {};
   const t0 = Date.now();
   const client = getImapClient();
@@ -36,11 +41,14 @@ async function processUnreadEmails(handler) {
   const lock = await client.getMailboxLock('INBOX');
   timings.lockMs = Date.now() - t1;
 
-  let checked = 0, processed = 0;
+  const since = new Date(Date.now() - sinceDays * 86400000);
+
+  let checked = 0, processed = 0, hitCap = false;
   const perEmailMs = [];
   try {
     const t2 = Date.now();
-    for await (const msg of client.fetch({ seen: false }, { envelope: true })) {
+    for await (const msg of client.fetch({ seen: false, since }, { envelope: true })) {
+      if (checked >= maxMessages) { hitCap = true; break; }
       checked++;
       const email = {
         id: msg.uid,
@@ -69,7 +77,7 @@ async function processUnreadEmails(handler) {
   await client.logout();
   timings.logoutMs = Date.now() - t3;
 
-  return { checked, processed, timings, perEmailMs };
+  return { checked, processed, hitCap, timings, perEmailMs };
 }
 
 module.exports = { sendEmail, processUnreadEmails };
