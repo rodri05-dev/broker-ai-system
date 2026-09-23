@@ -1,52 +1,43 @@
 const { processUnreadEmails } = require('../../lib/gmail');
+const { createLead } = require('../../lib/create-lead');
 
 module.exports = async (req, res) => {
-  // cron-job.org sends CRON_CHECK_SECRET as a Bearer header. ?secret=... lets you trigger this
-  // by hand from a browser, same as the renewal-check link, to test without waiting on a schedule.
   const expected = process.env.CRON_CHECK_SECRET;
   const viaHeader = Boolean(expected) && req.headers.authorization === `Bearer ${expected}`;
   const viaBrowser = Boolean(expected) && Boolean(req.query) && req.query.secret === expected;
   if (!viaHeader && !viaBrowser) return res.status(401).json({ error: 'unauthorized' });
 
-  const host = req.headers.host;
   const ownAddress = (process.env.GMAIL_ADDRESS || '').toLowerCase();
   const processed = [];
   const skipped = [];
   const failed = [];
 
   try {
-    // processUnreadEmails only marks a message read once this handler returns true — so a
-    // lead that fails to save stays unread and gets retried on the next run instead of being
-    // silently lost.
     const result = await processUnreadEmails(async (email) => {
-      // The system's own renewal / COI-review emails land back in this same inbox. Without
-      // this check, watching the whole Inbox would turn every one of those into a fake "lead".
       if (ownAddress && email.email.toLowerCase() === ownAddress) {
         skipped.push({ from: email.email, subject: email.subject, reason: 'own address' });
-        return true; // mark read — nothing further to do with it, and no need to recheck it
+        return true;
+      }
+      // System/notification mail lands in the same inbox and would otherwise be retried as a
+      // "lead" on every run it stays unread -- mark it read and move on instead.
+      if (/no-?reply|mailer-daemon|notifications?@|calendar-notification|accounts\.google\.com/i.test(email.email)) {
+        skipped.push({ from: email.email, subject: email.subject, reason: 'system sender' });
+        return true;
       }
 
       try {
-        const submitRes = await fetch(`https://${host}/api/submit-lead`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fullName: email.fullName, email: email.email, companyName: email.subject,
-            notes: email.snippet, leadSource: 'email'
-          })
+        await createLead({
+          fullName: email.fullName, email: email.email, companyName: email.subject,
+          notes: email.snippet, leadSource: 'email'
         });
-        if (submitRes.ok) {
-          processed.push({ from: email.email, subject: email.subject });
-          return true;
-        }
-        failed.push({ from: email.email, status: submitRes.status });
-        return false;
+        processed.push({ from: email.email, subject: email.subject });
+        return true;
       } catch (e) {
-        console.error('check-email: failed on one message:', e);
+        console.error('check-email: createLead failed for', email.email, e.message);
         failed.push({ from: email.email, error: e.message });
-        return false;
+        return false; // leave unread, retry next run
       }
-    });
+    }, { budgetMs: Number(process.env.CHECK_EMAIL_BUDGET_MS) || 20000 });
 
     res.status(200).json({
       checked: result.checked,
@@ -54,6 +45,7 @@ module.exports = async (req, res) => {
       details: processed,
       skipped,
       failed,
+      ranOutOfTime: result.ranOutOfTime,
       timings: result.timings
     });
   } catch (e) {
