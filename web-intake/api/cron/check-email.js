@@ -9,14 +9,23 @@ module.exports = async (req, res) => {
   if (!viaHeader && !viaBrowser) return res.status(401).json({ error: 'unauthorized' });
 
   const host = req.headers.host;
+  const ownAddress = (process.env.GMAIL_ADDRESS || '').toLowerCase();
   const processed = [];
+  const skipped = [];
   const failed = [];
 
   try {
     // processUnreadEmails only marks a message read once this handler returns true — so a
-    // lead that fails to save stays unread and gets tried again on the next run instead of
-    // being silently lost.
+    // lead that fails to save stays unread and gets retried on the next run instead of being
+    // silently lost.
     const result = await processUnreadEmails(async (email) => {
+      // The system's own renewal / COI-review emails land back in this same inbox. Without
+      // this check, watching the whole Inbox would turn every one of those into a fake "lead".
+      if (ownAddress && email.email.toLowerCase() === ownAddress) {
+        skipped.push({ from: email.email, subject: email.subject, reason: 'own address' });
+        return true; // mark read — nothing further to do with it, and no need to recheck it
+      }
+
       try {
         const submitRes = await fetch(`https://${host}/api/submit-lead`, {
           method: 'POST',
@@ -43,6 +52,7 @@ module.exports = async (req, res) => {
       checked: result.checked,
       processed: processed.length,
       details: processed,
+      skipped,
       failed,
       timings: result.timings
     });

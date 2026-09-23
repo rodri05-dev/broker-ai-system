@@ -21,6 +21,10 @@ function getImapClient() {
 // One connection for the whole batch: fetches each unread message, hands it to `handler`,
 // and marks it read in the SAME session the moment handler succeeds — instead of opening
 // a brand new IMAP connection per message just to flip one flag.
+//
+// Watches INBOX rather than a separate label — a real client email needs to be picked up
+// with zero manual labeling. (Previously this watched a "Leads" label that nothing ever
+// routed mail into, so nothing was ever found.)
 async function processUnreadEmails(handler) {
   const timings = {};
   const t0 = Date.now();
@@ -29,7 +33,7 @@ async function processUnreadEmails(handler) {
   timings.connectMs = Date.now() - t0;
 
   const t1 = Date.now();
-  const lock = await client.getMailboxLock('Leads');
+  const lock = await client.getMailboxLock('INBOX');
   timings.lockMs = Date.now() - t1;
 
   let checked = 0, processed = 0;
