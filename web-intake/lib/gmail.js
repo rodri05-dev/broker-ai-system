@@ -30,7 +30,7 @@ function getImapClient() {
 // `maxMessages` is a hard ceiling so one unusually large backlog can never blow past Vercel's
 // function time limit again; anything past the cap is simply left unread and picked up on the
 // next run a few minutes later, not lost.
-async function processUnreadEmails(handler, { sinceDays = 3, maxMessages = 25 } = {}) {
+async function processUnreadEmails(handler, { sinceDays = 1, maxMessages = 5 } = {}) {
   const timings = {};
   const t0 = Date.now();
   const client = getImapClient();
