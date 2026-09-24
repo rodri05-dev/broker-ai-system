@@ -57,6 +57,7 @@ async function processUnreadEmails(handler, { sinceDays = 1, maxMessages = 5, bu
   const timings = {};
   const perEmail = [];
   let checked = 0, processed = 0, ranOutOfTime = false, stage = 'start', lock = null;
+  const own = (process.env.GMAIL_ADDRESS || '').trim().toLowerCase();
 
   console.log(`check-email: starting, budget ${budgetMs}ms`);
   const client = getImapClient();
@@ -112,9 +113,14 @@ async function processUnreadEmails(handler, { sinceDays = 1, maxMessages = 5, bu
       };
       console.log(`check-email: [${checked}] from ${email.email || 'unknown'} - "${email.subject}"`);
 
+      // Never leads: our own outgoing mail (producer notifications land in this same inbox) and
+      // delivery-failure notices. Marked read here so they can't pile up and block real leads
+      // behind the per-run limit.
+      const isNoise = (own && email.email.toLowerCase() === own) || /^(mailer-daemon|postmaster)@/i.test(email.email);
+
       stage = 'handler';
       const tHandler = Date.now();
-      const result = await withDeadline(
+      const result = isNoise ? 'skip' : await withDeadline(
         Promise.resolve().then(() => handler(email)).catch(err => {
           console.error(`check-email: [${checked}] handler threw -- leaving unread:`, err.message);
           return false;
@@ -138,7 +144,8 @@ async function processUnreadEmails(handler, { sinceDays = 1, maxMessages = 5, bu
       perEmail.push({
         from: email.email, handlerMs,
         markedRead: flagged !== false && flagged !== TIMEOUT,
-        ...(result === 'skip' ? { skipped: true } : {})
+        ...(result === 'skip' ? { skipped: true } : {}),
+        ...(isNoise ? { ownOrSystemMail: true } : {})
       });
       if (flagged === false || flagged === TIMEOUT) {
         // Handled, but still unread -- it will be picked up again next run.
