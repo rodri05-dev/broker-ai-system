@@ -14,116 +14,152 @@ async function sendEmail({ to, subject, body, cc }) {
 }
 
 function getImapClient() {
-  return new ImapFlow({
+  const client = new ImapFlow({
+    disableAutoIdle: true,
     host: 'imap.gmail.com', port: 993, secure: true,
     auth: { user: process.env.GMAIL_ADDRESS, pass: process.env.GMAIL_APP_PASSWORD },
     logger: false
   });
+  // Without an 'error' listener, a dropped connection can crash the whole function.
+  client.on('error', err => console.warn('check-email: IMAP client error:', err.message));
+  return client;
 }
 
-// Races any promise against a shared deadline. On timeout it resolves to `fallback` instead
-// of rejecting, and swallows whatever the original promise eventually does in the background,
-// so a slow IMAP call that finishes late never turns into an unhandled rejection.
 const TIMEOUT = Symbol('timeout');
-function withDeadline(promise, deadlineAt, fallback = TIMEOUT) {
-  const remaining = Math.max(250, deadlineAt - Date.now());
-  return Promise.race([
-    Promise.resolve(promise).catch(err => {
-      console.warn('withDeadline: background rejection after race settled:', err.message);
-      return fallback;
-    }),
-    new Promise(resolve => setTimeout(() => resolve(fallback), remaining))
-  ]);
+class OutOfTime extends Error {}
+
+// Races a promise against a deadline. Out of time -> resolves TIMEOUT.
+// Real errors still reject so the caller can see them (the old version turned every error into a
+// fake "timeout", which hid the actual problem). A failure that lands after the race is over is
+// swallowed, so it can never become an unhandled rejection.
+function withDeadline(promise, deadlineAt) {
+  let timer;
+  const work = Promise.resolve(promise);
+  work.catch(() => {});
+  const clock = new Promise(resolve => {
+    timer = setTimeout(() => resolve(TIMEOUT), Math.max(250, deadlineAt - Date.now()));
+  });
+  return Promise.race([work, clock]).finally(() => clearTimeout(timer));
 }
 
-// One IMAP connection for the whole batch: fetches unread messages, hands each to `handler`,
-// and marks it read in the SAME session the instant handler returns true. Every network-facing
-// step is raced against `deadlineAt`, so this ALWAYS returns by then no matter how slow Gmail
-// or `handler` is being -- it never depends on Vercel or cron-job.org to cut it off.
+// Never waits on Gmail: a polite LOGOUT for at most 1s, then the socket is force-closed.
+async function closeImap(client) {
+  try { await withDeadline(client.logout(), Date.now() + 1000); } catch {}
+  try { client.close(); } catch {}
+}
+
+// handler(email) returns:  true   -> handled: mark the email read
+//                          'skip' -> ignore it, but mark it read so it stops being re-checked
+//                          false  -> leave it unread and try again next run
+// Always returns within `budgetMs` and always closes the connection.
 async function processUnreadEmails(handler, { sinceDays = 1, maxMessages = 5, budgetMs = 20000 } = {}) {
   const deadlineAt = Date.now() + budgetMs;
   const timings = {};
   const perEmail = [];
-  let checked = 0, processed = 0, ranOutOfTime = false;
+  let checked = 0, processed = 0, ranOutOfTime = false, stage = 'start', lock = null;
 
   console.log(`check-email: starting, budget ${budgetMs}ms`);
   const client = getImapClient();
 
-  const t0 = Date.now();
-  const connected = await withDeadline(client.connect(), deadlineAt);
-  timings.connectMs = Date.now() - t0;
-  if (connected === TIMEOUT) {
-    console.error(`check-email: IMAP connect exceeded budget after ${timings.connectMs}ms`);
-    client.close();
-    return { checked: 0, processed: 0, ranOutOfTime: true, timings, perEmail, stage: 'connect' };
-  }
-  console.log(`check-email: connected in ${timings.connectMs}ms`);
+  // Runs one IMAP step against the shared deadline and records how long it took.
+  const step = async (name, timingKey, promise) => {
+    stage = name;
+    const t = Date.now();
+    try {
+      const out = await withDeadline(promise, deadlineAt);
+      if (out === TIMEOUT) throw new OutOfTime(`did not finish within the ${budgetMs}ms budget`);
+      return out;
+    } finally {
+      timings[timingKey] = Date.now() - t;
+    }
+  };
 
-  const t1 = Date.now();
-  const lock = await withDeadline(client.getMailboxLock('INBOX'), deadlineAt);
-  timings.lockMs = Date.now() - t1;
-  if (lock === TIMEOUT) {
-    console.error(`check-email: mailbox lock exceeded budget after ${timings.lockMs}ms`);
-    withDeadline(client.logout(), Date.now() + 3000).catch(() => {});
-    return { checked: 0, processed: 0, ranOutOfTime: true, timings, perEmail, stage: 'lock' };
-  }
-  console.log(`check-email: locked INBOX in ${timings.lockMs}ms`);
-
-  const since = new Date(Date.now() - sinceDays * 86400000);
+  // true | false | TIMEOUT. Marked by UID: without { uid: true } imapflow reads the number as a
+  // message POSITION, so it would flag the wrong email (or none) and the same one would come back every run.
+  const markRead = uid =>
+    withDeadline(client.messageFlagsAdd(uid, ['\\Seen'], { uid: true }), deadlineAt)
+      .catch(err => { console.error(`check-email: could not mark uid ${uid} read:`, err.message); return false; });
 
   try {
-    const iterator = client.fetch({ seen: false, since }, { envelope: true })[Symbol.asyncIterator]();
-    while (checked < maxMessages) {
-      if (Date.now() > deadlineAt) { ranOutOfTime = true; console.warn('check-email: hit time budget before finishing the fetch loop'); break; }
+    await step('connect', 'connectMs', client.connect());
+    lock = await step('lock', 'lockMs', client.getMailboxLock('INBOX'));
 
-      const step = await withDeadline(iterator.next(), deadlineAt);
-      if (step === TIMEOUT) { ranOutOfTime = true; console.warn('check-email: fetching the next message exceeded budget'); break; }
-      if (step.done) break;
+    // 1) List the unread UIDs. 2) Download just those envelopes, start to finish.
+    // Nothing else may touch the connection while the download runs: imapflow hangs if it does.
+    // (The old loop marked emails read INSIDE the download, and a stalled download also blocked logout.)
+    const since = new Date(Date.now() - sinceDays * 86400000);
+    const found = await step('search', 'searchMs', client.search({ seen: false, since }, { uid: true }));
+    const uids = (Array.isArray(found) ? found : []).slice(0, maxMessages);
+    console.log(`check-email: ${Array.isArray(found) ? found.length : 0} unread, taking ${uids.length}`);
 
-      const msg = step.value;
+    const messages = [];
+    if (uids.length) {
+      await step('fetch', 'fetchMs', (async () => {
+        for await (const msg of client.fetch(uids.join(','), { envelope: true }, { uid: true })) messages.push(msg);
+      })());
+    }
+
+    // 3) The download is finished, so it is now safe to handle each email and mark it read.
+    for (const msg of messages) {
       checked++;
+      const env = msg.envelope || {};
       const email = {
         id: msg.uid,
-        fullName: msg.envelope.from?.[0]?.name || '',
-        email: msg.envelope.from?.[0]?.address || '',
-        subject: msg.envelope.subject || '',
+        fullName: env.from?.[0]?.name || '',
+        email: env.from?.[0]?.address || '',
+        subject: env.subject || '',
         snippet: ''
       };
       console.log(`check-email: [${checked}] from ${email.email || 'unknown'} - "${email.subject}"`);
 
+      stage = 'handler';
       const tHandler = Date.now();
-      const ok = await withDeadline(Promise.resolve().then(() => handler(email)), deadlineAt);
+      const result = await withDeadline(
+        Promise.resolve().then(() => handler(email)).catch(err => {
+          console.error(`check-email: [${checked}] handler threw -- leaving unread:`, err.message);
+          return false;
+        }),
+        deadlineAt
+      );
       const handlerMs = Date.now() - tHandler;
 
-      if (ok === TIMEOUT) {
-        console.warn(`check-email: [${checked}] handler exceeded budget after ${handlerMs}ms -- leaving unread, will retry next run`);
+      if (result === TIMEOUT) {
         perEmail.push({ from: email.email, handlerMs, timedOut: true });
-        ranOutOfTime = true;
-        break;
+        throw new OutOfTime('handler did not finish within the budget -- left unread, will retry next run');
       }
-      if (ok) {
-        const tFlag = Date.now();
-        await withDeadline(client.messageFlagsAdd(msg.uid, ['\\Seen']), deadlineAt);
-        perEmail.push({ from: email.email, handlerMs, flagMs: Date.now() - tFlag });
-        processed++;
-        console.log(`check-email: [${checked}] processed in ${handlerMs}ms, marked read`);
-      } else {
+      if (!result) {
         perEmail.push({ from: email.email, handlerMs, skipped: true });
-        console.log(`check-email: [${checked}] handler returned false -- left unread`);
+        continue;
       }
+
+      stage = 'mark-read';
+      const flagged = await markRead(msg.uid);
+      if (result !== 'skip') processed++;
+      perEmail.push({
+        from: email.email, handlerMs,
+        markedRead: flagged !== false && flagged !== TIMEOUT,
+        ...(result === 'skip' ? { skipped: true } : {})
+      });
+      if (flagged === false || flagged === TIMEOUT) {
+        // Handled, but still unread -- it will be picked up again next run.
+        timings.problem = `mark-read failed for uid ${msg.uid} (it will be picked up again next run)`;
+      }
+      if (flagged === TIMEOUT) { ranOutOfTime = true; break; }
     }
   } catch (e) {
-    console.error('check-email: fetch loop threw:', e.message);
+    if (e instanceof OutOfTime) ranOutOfTime = true;
+    // Shows up in the JSON you already look at: which step stopped, and the real error message.
+    timings.problem = `${stage}: ${e.message}`;
+    console.error(`check-email: stopped during "${stage}":`, e.message);
   } finally {
-    try { lock.release(); } catch (e) { console.warn('check-email: lock release failed:', e.message); }
+    try { if (lock) lock.release(); } catch (e) { console.warn('check-email: lock release failed:', e.message); }
+    const t = Date.now();
+    await closeImap(client);
+    timings.logoutMs = Date.now() - t;
   }
 
-  const t3 = Date.now();
-  await withDeadline(client.logout(), Date.now() + 3000).catch(() => {});
-  timings.logoutMs = Date.now() - t3;
-
   console.log(`check-email: done -- checked ${checked}, processed ${processed}, ranOutOfTime ${ranOutOfTime}`);
-  return { checked, processed, ranOutOfTime, timings, perEmail };
+  return { checked, processed, ranOutOfTime, timings, perEmail, ...(timings.problem ? { stage } : {}) };
 }
 
 module.exports = { sendEmail, processUnreadEmails };
