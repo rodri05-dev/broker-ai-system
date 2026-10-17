@@ -48,6 +48,17 @@ function identityFrom(collected) {
     businessType: pickValue(collected, k => k === 'businesstype')
   };
 }
+
+// The AI sometimes puts details inside a sub-object like "new_business": {...}.
+// This lifts them out, so every other file finds them in one flat list.
+function flattenData(obj = {}) {
+  const out = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v && typeof v === 'object' && !Array.isArray(v)) Object.assign(out, flattenData(v));
+    else out[k] = v;
+  }
+  return out;
+}
  
 async function getOrCreateSession(sessionToken, channel = 'chat') {
   const { data: existing } = await supabase
@@ -132,6 +143,7 @@ async function runAgentTurn({ session, userText, leadSource = 'chat' }) {
  
   const parsed = parseAgentJson(await groqChat(messages, { json: true }));
   const now = new Date().toISOString();
+  parsed.collected_data = flattenData(parsed.collected_data);
  
   const contactId = await ensureContact(session, parsed.collected_data, leadSource);
   const d = parsed.collected_data && typeof parsed.collected_data === 'object' ? parsed.collected_data : {};

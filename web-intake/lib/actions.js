@@ -138,11 +138,24 @@ async function handleQualifyLead({ contactId, data }) {
       .catch(e => console.error('HubSpot sync failed:', e));
   }
 
-  await sendEmail({
-    to: process.env.PRODUCER_EMAIL,
-    subject: `Qualified lead: ${contact?.company_name || contact?.full_name || ''} (score ${score}/100)`,
-    body: `The AI agent qualified a new lead.\n\nScore: ${score}/100\nContact: ${contact?.full_name || '—'} / ${contact?.email || '—'} / ${contact?.phone || '—'}\n\nWhat it collected:\n${JSON.stringify(data, null, 2)}`
-  });
+  const coverage = Array.isArray(data.linesOfBusiness) ? data.linesOfBusiness.join(', ') : (data.linesOfBusiness || '—');
+await sendEmail({
+  to: process.env.PRODUCER_EMAIL,
+  subject: `Qualified lead: ${contact?.company_name || contact?.full_name || ''} (score ${score}/100)`,
+  body: [
+    'The AI agent qualified a new lead.',
+    '',
+    `Score: ${score}/100`,
+    `Contact: ${contact?.full_name || '—'}`,
+    `Email: ${contact?.email || '—'}`,
+    `Phone: ${contact?.phone || '—'}`,
+    `Business: ${contact?.company_name || '—'} (${data.businessType || '—'})`,
+    `Employees: ${data.employeeCount ?? '—'}`,
+    `Coverage wanted: ${coverage}`,
+    `Currently insured: ${data.currentlyInsured === false ? 'No' : data.currentlyInsured === true ? 'Yes' : '—'}`,
+    `Contract requires coverage: ${data.hasContractRequirement ? 'Yes' : 'No'}`
+  ].join('\n')
+});
 
   await supabase.from('producer_activity').insert({
     activity_type: 'lead_qualified', contact_id: contactId, details: { score }
