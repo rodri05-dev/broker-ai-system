@@ -148,7 +148,7 @@ await sendEmail({
     `Score: ${score}/100`,
     `Contact: ${contact?.full_name || '—'}`,
     `Email: ${contact?.email || '—'}`,
-    `Phone: ${contact?.phone || '—'}`,
+    `Phone: ${contact?.phone || data.phone || '—'}`,
     `Business: ${contact?.company_name || '—'} (${data.businessType || '—'})`,
     `Employees: ${data.employeeCount ?? '—'}`,
     `Coverage wanted: ${coverage}`,

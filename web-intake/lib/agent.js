@@ -144,6 +144,10 @@ async function runAgentTurn({ session, userText, leadSource = 'chat' }) {
   const parsed = parseAgentJson(await groqChat(messages, { json: true }));
   const now = new Date().toISOString();
   parsed.collected_data = flattenData(parsed.collected_data);
+
+  const cd = parsed.collected_data;
+const ph = cd.phone || cd.phoneNumber || cd.phone_number || cd.contactPhone || cd.callbackNumber;
+if (ph) cd.phone = ph;
  
   const contactId = await ensureContact(session, parsed.collected_data, leadSource);
   const d = parsed.collected_data && typeof parsed.collected_data === 'object' ? parsed.collected_data : {};
